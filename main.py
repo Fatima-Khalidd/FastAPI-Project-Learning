@@ -1,65 +1,53 @@
 from fastapi import FastAPI, Depends, HTTPException
-from sqlalchemy import create_engine, Column, Integer, String
-from sqlalchemy.orm import sessionmaker, declarative_base, Session
+from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
+from passlib.context import CryptContext
+from jose import jwt
+from datetime import datetime, timedelta, timezone
 
 app = FastAPI()
 
-DATABASE_URL = "sqlite:///./test.db"
-engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
-sessionLocal = sessionmaker(bind=engine)
-Base = declarative_base()
+SECRET_KEY = "mysecretkey"
+ALGORITHM = "HS256"
+ACCESS_TOKEN_EXPIRE_MINUTES = 30
 
-class Todo(Base):
-    __tablename__ = "todos"
-    id = Column(Integer, primary_key=True, index=True)
-    title = Column(String)
-    completed = Column(String)
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
 
-Base.metadata.create_all(bind=engine)
+fake_users_db = {
+    "admin": {
+        "username": "admin",
+        "hashed_password": pwd_context.hash("password")
+    }
+}
 
-def get_db():
-    db = sessionLocal()
+def hash_password(password: str):
+    return pwd_context.hash(password)
+
+def verify_password(plain_password: str, hashed_password: str):
+    return pwd_context.verify(plain_password, hashed_password)
+
+def create_token(data: dict):
+    to_encode = data.copy()
+    expire = datetime.now(timezone.utc) + timedelta(minutes=30)
+    to_encode.update({"exp": expire})
+    token = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+    return token
+
+@app.post("/token")
+def login(form_data: OAuth2PasswordRequestForm = Depends()):
+    user = fake_users_db.get(form_data.username)
+    if not user or not verify_password(form_data.password, user["hashed_password"]):
+        raise HTTPException(status_code=401, detail="Invalid username or password")
+    access_token = create_token({"sub": user["username"]})
+    return {"access_token": access_token, "token_type": "bearer"}
+
+def verify_token(token: str = Depends(oauth2_scheme)):
     try:
-        yield db
-    finally:
-        db.close()
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        return payload
+    except:
+        raise HTTPException(status_code=401, detail="Invalid Token")
 
-@app.post("/todos")
-def create_todo(title: str, db: Session = Depends(get_db)):
-    todo = Todo(title=title, completed="False")
-    db.add(todo)
-    db.commit()
-    db.refresh(todo)
-    return {"message": "Todo Created", "data": todo}
-
-@app.get("/todos")
-def get_todos(db: Session = Depends(get_db)):
-    todos = db.query(Todo).all()
-    return {"Total Data": len(todos), "message": "Todos Fetched", "data": todos}
-
-@app.get("/todos/{todo_id}")
-def get_todo_by_id(todo_id: int, db: Session = Depends(get_db)):
-    todo = db.query(Todo).filter(Todo.id == todo_id).first()
-    if not todo:
-        raise HTTPException(status_code=404, detail=f"Todo with id {todo_id} not found")
-    return todo
-
-@app.put("/todos/{todo_id}")
-def update_todo(todo_id: int, title: str, completed: str, db: Session = Depends(get_db)):
-    todo = db.query(Todo).filter(Todo.id == todo_id).first()
-    if not todo:
-        raise HTTPException(status_code=404, detail=f"Todo with id {todo_id} not found")
-    todo.title = title
-    todo.completed = completed
-    db.commit()
-    db.refresh(todo)
-    return {"message": "Todo Updated", "data": todo}
-
-@app.delete("/todos/{todo_id}")
-def delete_todo(todo_id: int, db: Session = Depends(get_db)):
-    todo = db.query(Todo).filter(Todo.id == todo_id).first()
-    if not todo:
-        raise HTTPException(status_code=404, detail=f"Todo with id {todo_id} not found")
-    db.delete(todo)
-    db.commit()
-    return {"message": "Todo Deleted", "Todo Deleted": todo}
+@app.get("/dashboard")
+def dashboard(user=Depends(verify_token)):
+    return {"message": "Welcome to Dashboard", "user": user["sub"]}
