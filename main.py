@@ -1,65 +1,35 @@
-from fastapi import FastAPI, Depends, HTTPException
-from sqlalchemy import create_engine, Column, Integer, String
-from sqlalchemy.orm import sessionmaker, declarative_base, Session
+from fastapi import FastAPI, Depends, HTTPException, Request
+from slowapi import Limiter
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
+from fastapi.responses import JSONResponse
 
 app = FastAPI()
 
-DATABASE_URL = "sqlite:///./test.db"
-engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
-sessionLocal = sessionmaker(bind=engine)
-Base = declarative_base()
+#limiter set up
+limiter=Limiter(key_func=get_remote_address)
+app.state.limiter=limiter
 
-class Todo(Base):
-    __tablename__ = "todos"
-    id = Column(Integer, primary_key=True, index=True)
-    title = Column(String)
-    completed = Column(String)
 
-Base.metadata.create_all(bind=engine)
+# error handler
+@app.exception_handler(RateLimitExceeded)
+def rate_limit_handler(request:Request,exc:RateLimitExceeded):
+    return JSONResponse(
+        status_code=429,
+        content={
+            "detail":"Too Many requests"
+        }
 
-def get_db():
-    db = sessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
+    )
+        
+# rate limiter api
+@app.get("/data")
+@limiter.limit("5/minute")
 
-@app.post("/todos")
-def create_todo(title: str, db: Session = Depends(get_db)):
-    todo = Todo(title=title, completed="False")
-    db.add(todo)
-    db.commit()
-    db.refresh(todo)
-    return {"message": "Todo Created", "data": todo}
+def get_data(request:Request):
+    return {
+        "message":"Sucess"
+    }
+    
 
-@app.get("/todos")
-def get_todos(db: Session = Depends(get_db)):
-    todos = db.query(Todo).all()
-    return {"Total Data": len(todos), "message": "Todos Fetched", "data": todos}
 
-@app.get("/todos/{todo_id}")
-def get_todo_by_id(todo_id: int, db: Session = Depends(get_db)):
-    todo = db.query(Todo).filter(Todo.id == todo_id).first()
-    if not todo:
-        raise HTTPException(status_code=404, detail=f"Todo with id {todo_id} not found")
-    return todo
-
-@app.put("/todos/{todo_id}")
-def update_todo(todo_id: int, title: str, completed: str, db: Session = Depends(get_db)):
-    todo = db.query(Todo).filter(Todo.id == todo_id).first()
-    if not todo:
-        raise HTTPException(status_code=404, detail=f"Todo with id {todo_id} not found")
-    todo.title = title
-    todo.completed = completed
-    db.commit()
-    db.refresh(todo)
-    return {"message": "Todo Updated", "data": todo}
-
-@app.delete("/todos/{todo_id}")
-def delete_todo(todo_id: int, db: Session = Depends(get_db)):
-    todo = db.query(Todo).filter(Todo.id == todo_id).first()
-    if not todo:
-        raise HTTPException(status_code=404, detail=f"Todo with id {todo_id} not found")
-    db.delete(todo)
-    db.commit()
-    return {"message": "Todo Deleted", "Todo Deleted": todo}
